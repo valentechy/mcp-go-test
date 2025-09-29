@@ -450,7 +450,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 func main() {
 	// Configuración por defecto
-	mongoURI := "mongodb://localhost:27017"
+	mongoURI := "mongodb://127.0.0.1:27017"
 	dbName := "school"
 	collectionName := "students"
 	port := "8080"

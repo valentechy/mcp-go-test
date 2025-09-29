@@ -43,7 +43,7 @@ El servidor MCP proporciona las siguientes herramientas:
 
 Puedes configurar el servidor usando las siguientes variables de entorno:
 
-- `MONGODB_URI`: URI de conexión a MongoDB (por defecto: `mongodb://localhost:27017`)
+- `MONGODB_URI`: URI de conexión a MongoDB (por defecto: `mongodb://127.0.0.1:27017`)
 - `DB_NAME`: Nombre de la base de datos (por defecto: `school`)
 - `COLLECTION_NAME`: Nombre de la colección (por defecto: `students`)
 - `PORT`: Puerto del servidor MCP (por defecto: `8080`)
@@ -51,7 +51,7 @@ Puedes configurar el servidor usando las siguientes variables de entorno:
 ### Ejemplo de configuración:
 
 ```bash
-export MONGODB_URI="mongodb://localhost:27017"
+export MONGODB_URI="mongodb://127.0.0.1:27017"
 export DB_NAME="school"
 export COLLECTION_NAME="students"
 export PORT="8080"
@@ -85,46 +85,27 @@ go run main.go
 
 ### Configuración de MongoDB
 
-Para preparar tu base de datos MongoDB, puedes usar estos comandos en la consola de MongoDB:
+El proyecto incluye datos de ejemplo que se pueden cargar automáticamente:
 
-```javascript
-// Conectar a la base de datos
-use school
-
-// Insertar algunos estudiantes de ejemplo
-db.students.insertMany([
-  {
-    "name": "Juan Pérez",
-    "subjects": {
-      "matematicas": 8.5,
-      "historia": 9.0,
-      "ciencias": 7.5,
-      "literatura": 8.8
-    }
-  },
-  {
-    "name": "María García",
-    "subjects": {
-      "matematicas": 9.2,
-      "historia": 8.7,
-      "ciencias": 9.5,
-      "literatura": 8.9
-    }
-  },
-  {
-    "name": "Carlos López",
-    "subjects": {
-      "matematicas": 7.8,
-      "historia": 8.2,
-      "ciencias": 8.0,
-      "literatura": 7.9
-    }
-  }
-])
-
-// Verificar que se insertaron correctamente
-db.students.find().pretty()
+#### Opción 1: Script Automático (Recomendado)
+```bash
+# Ejecuta el script de configuración
+./setup_db.sh
 ```
+
+#### Opción 2: Manual con mongosh
+```bash
+# Cargar datos desde el archivo compartido
+mongosh school sample_data.js
+```
+
+#### Opción 3: Docker (Automático)
+```bash
+# Los datos se cargan automáticamente al iniciar
+docker-compose up -d
+```
+
+Los datos de ejemplo incluyen 5 estudiantes con notas en matemáticas, historia, ciencias, literatura e inglés.
 
 ## Uso del Servidor MCP
 
@@ -180,10 +161,18 @@ Una vez que el servidor esté ejecutándose, puedes conectarte a él usando cual
 
 ```
 mcp-go-test/
-├── main.go          # Archivo principal del servidor
+├── main.go          # Servidor MCP principal
+├── main_test.go     # Tests unitarios
 ├── go.mod           # Dependencias de Go
 ├── go.sum           # Checksums de dependencias
-└── README.md        # Este archivo
+├── sample_data.js   # Datos de ejemplo compartidos
+├── setup_db.sh      # Configuración MongoDB local
+├── init-mongo.js    # Inicialización Docker
+├── run.sh           # Script de ejecución
+├── test_server.sh   # Script de pruebas
+├── Dockerfile       # Imagen Docker
+├── docker-compose.yml # Orquestación completa
+└── README.md        # Documentación
 ```
 
 ### Próximas características
