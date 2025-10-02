@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -17,9 +19,9 @@ import (
 
 // Estructura para representar un alumno
 type Student struct {
-	ID       primitive.ObjectID    `bson:"_id,omitempty" json:"id,omitempty"`
-	Name     string               `bson:"name" json:"name"`
-	Subjects map[string]float64   `bson:"subjects" json:"subjects"`
+	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	Name     string             `bson:"name" json:"name"`
+	Subjects map[string]float64 `bson:"subjects" json:"subjects"`
 }
 
 // Estructura para el protocolo MCP
@@ -46,7 +48,7 @@ type Tool struct {
 type ToolSchema struct {
 	Type       string                 `json:"type"`
 	Properties map[string]interface{} `json:"properties"`
-	Required   []string              `json:"required,omitempty"`
+	Required   []string               `json:"required,omitempty"`
 }
 
 type Server struct {
@@ -354,16 +356,31 @@ func (s *Server) handleToolCall(toolName string, params map[string]interface{}) 
 	}
 }
 
-func (s *Server) handleMessage(conn net.Conn, message []byte) {
+// ARREGLADA: Manejo de mensajes para ambos modos (TCP y stdio)
+func (s *Server) processMessage(message []byte) []byte {
 	var msg MCPMessage
 	if err := json.Unmarshal(message, &msg); err != nil {
-		log.Printf("Error al parsear mensaje: %v", err)
-		return
+		// Si no podemos parsear el mensaje, usamos un ID por defecto
+		errorResponse := MCPMessage{
+			JsonRPC: "2.0",
+			ID:      "error", // ID por defecto para errores de parsing
+			Error: &MCPError{
+				Code:    -32700,
+				Message: "Parse error: " + err.Error(),
+			},
+		}
+		responseBytes, _ := json.Marshal(errorResponse)
+		return responseBytes
 	}
 
 	response := MCPMessage{
 		JsonRPC: "2.0",
 		ID:      msg.ID,
+	}
+
+	// Asegurar que el ID nunca sea nil
+	if response.ID == nil {
+		response.ID = "unknown"
 	}
 
 	switch msg.Method {
@@ -400,6 +417,10 @@ func (s *Server) handleMessage(conn net.Conn, message []byte) {
 				}
 			} else {
 				arguments, _ := params["arguments"].(map[string]interface{})
+				if arguments == nil {
+					arguments = make(map[string]interface{})
+				}
+
 				result, err := s.handleToolCall(toolName, arguments)
 				if err != nil {
 					response.Error = &MCPError{
@@ -419,32 +440,73 @@ func (s *Server) handleMessage(conn net.Conn, message []byte) {
 			}
 		}
 
+	case "notifications/initialized":
+		// Notificación de inicialización - no necesita respuesta
+		return []byte{}
+
 	default:
 		response.Error = &MCPError{
 			Code:    -32601,
-			Message: "Método no encontrado",
+			Message: "Método no encontrado: " + msg.Method,
 		}
 	}
 
 	responseBytes, _ := json.Marshal(response)
-	conn.Write(responseBytes)
-	conn.Write([]byte("\n"))
+	return responseBytes
+}
+
+// NUEVA FUNCIÓN: Manejo de stdin/stdout para Claude Desktop
+func (s *Server) handleStdio() {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		// Procesar mensaje
+		response := s.processMessage(line)
+
+		// Solo enviar respuesta si no está vacía
+		if len(response) > 0 {
+			fmt.Printf("%s\n", response)
+
+			// Flush stdout para asegurar que se envíe inmediatamente
+			os.Stdout.Sync()
+		}
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		// En modo stdio no podemos usar log porque contamina stdout
+		// Solo salir silenciosamente si hay error
+		os.Exit(1)
+	}
+}
+
+// MODIFICADA: Usar la función compartida processMessage
+func (s *Server) handleMessage(conn net.Conn, message []byte) {
+	response := s.processMessage(message)
+	if len(response) > 0 {
+		conn.Write(response)
+		conn.Write([]byte("\n"))
+	}
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	log.Printf("Nueva conexión desde %s", conn.RemoteAddr())
 
-	buffer := make([]byte, 4096)
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			log.Printf("Error leyendo de la conexión: %v", err)
-			break
+	scanner := bufio.NewScanner(conn)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) > 0 {
+			s.handleMessage(conn, line)
 		}
+	}
 
-		message := buffer[:n]
-		s.handleMessage(conn, message)
+	if err := scanner.Err(); err != nil {
+		log.Printf("Error leyendo de la conexión: %v", err)
 	}
 }
 
@@ -469,33 +531,77 @@ func main() {
 		port = p
 	}
 
+	// Detectar modo de operación
+	mode := getEnv("MCP_MODE", "auto")
+	isStdio := mode == "stdio" || (mode == "auto" && isStdioMode())
+
+	// Solo mostrar logs en modo TCP para no contaminar stdio
+	if !isStdio {
+		log.Printf("Conectando a MongoDB: %s", mongoURI)
+	}
+
 	// Crear el servidor
 	server, err := NewServer(mongoURI, dbName, collectionName)
 	if err != nil {
-		log.Fatalf("Error conectando a MongoDB: %v", err)
+		if !isStdio {
+			log.Fatalf("Error conectando a MongoDB: %v", err)
+		} else {
+			// En modo stdio, salir silenciosamente
+			os.Exit(1)
+		}
 	}
 	defer server.Close()
 
-	log.Printf("Conectado a MongoDB: %s", mongoURI)
-	log.Printf("Base de datos: %s, Colección: %s", dbName, collectionName)
-
-	// Crear el listener TCP
-	listener, err := net.Listen("tcp", ":"+port)
-	if err != nil {
-		log.Fatalf("Error creando listener: %v", err)
+	if !isStdio {
+		log.Printf("Conectado a MongoDB: %s", mongoURI)
+		log.Printf("Base de datos: %s, Colección: %s", dbName, collectionName)
 	}
-	defer listener.Close()
 
-	log.Printf("Servidor MCP escuchando en puerto %s", port)
+	if isStdio {
+		// Modo stdio para Claude Desktop
+		server.handleStdio()
+	} else {
+		// Modo TCP para pruebas directas
+		log.Printf("Iniciando servidor MCP en puerto %s...", port)
 
-	// Aceptar conexiones
-	for {
-		conn, err := listener.Accept()
+		// Crear el listener TCP
+		listener, err := net.Listen("tcp", ":"+port)
 		if err != nil {
-			log.Printf("Error aceptando conexión: %v", err)
-			continue
+			log.Fatalf("Error creando listener: %v", err)
 		}
+		defer listener.Close()
 
-		go server.handleConnection(conn)
+		log.Printf("Servidor MCP escuchando en puerto %s", port)
+
+		// Aceptar conexiones
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("Error aceptando conexión: %v", err)
+				continue
+			}
+
+			go server.handleConnection(conn)
+		}
 	}
+}
+
+// NUEVAS FUNCIONES de utilidad
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func isStdioMode() bool {
+	// Detectar si estamos siendo ejecutados por Claude Desktop
+	// Claude Desktop no proporciona un terminal interactivo
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+
+	// Si stdin es un pipe (no un terminal), probablemente estamos en modo MCP
+	return (stat.Mode() & os.ModeCharDevice) == 0
 }
